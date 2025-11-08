@@ -21,6 +21,17 @@ HARDCODED_REGIONS: List[str] = ["FI"]
 REGION_GEO: Dict[str, Tuple[float, float, int]] = {
     "FI": (60.192059, 24.945831, 1000),  # Helsinki, ~whole Finland radius
 }
+# Multiple city seeds per region to strengthen geo bias in search
+REGION_GEO_MULTIPLE: Dict[str, List[Tuple[float, float, int]]] = {
+    "FI": [
+        (60.192059, 24.945831, 200),   # Helsinki
+        (60.205490, 24.655899, 150),   # Espoo
+        (60.293353, 25.037768, 150),   # Vantaa
+        (61.498021, 23.760311, 200),   # Tampere
+        (60.451813, 22.266630, 200),   # Turku
+        (65.012615, 25.471453, 300),   # Oulu
+    ],
+}
 
 
 def load_api_key(explicit_key: Optional[str] = None) -> str:
@@ -444,7 +455,7 @@ def run_youtube_poc(
     if not relevance_language and "FI" in regions:
         relevance_language = "fi"
     if not published_after_iso:
-        published_after_iso = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        published_after_iso = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
     key = load_api_key(api_key)
     trending = fetch_trending_candidates(
         api_key=key,
@@ -460,20 +471,37 @@ def run_youtube_poc(
         loc_radius_km: Optional[int] = None
         # Use geobias if available for first region
         if regions:
-            geo = REGION_GEO.get(regions[0])
-            if geo:
-                lat, lon, radius = geo
-                loc_tuple = (lat, lon)
-                loc_radius_km = radius
-        boost_ids = fetch_shorts_via_search(
-            api_key=key,
-            published_after_iso=published_after_iso,
-            regions=regions,
-            pages_per_region=1,
-            relevance_language=relevance_language,
-            location=loc_tuple,
-            location_radius_km=loc_radius_km,
-        )
+            geo_multi = REGION_GEO_MULTIPLE.get(regions[0])
+            if geo_multi:
+                boost_ids: List[str] = []
+                for lat, lon, radius in geo_multi:
+                    loc_tuple = (lat, lon)
+                    loc_radius_km = radius
+                    ids = fetch_shorts_via_search(
+                        api_key=key,
+                        published_after_iso=published_after_iso,
+                        regions=regions,
+                        pages_per_region=1,
+                        relevance_language=relevance_language,
+                        location=loc_tuple,
+                        location_radius_km=loc_radius_km,
+                    )
+                    boost_ids.extend(ids)
+            else:
+                geo = REGION_GEO.get(regions[0])
+                if geo:
+                    lat, lon, radius = geo
+                    loc_tuple = (lat, lon)
+                    loc_radius_km = radius
+                boost_ids = fetch_shorts_via_search(
+                    api_key=key,
+                    published_after_iso=published_after_iso,
+                    regions=regions,
+                    pages_per_region=1,
+                    relevance_language=relevance_language,
+                    location=loc_tuple,
+                    location_radius_km=loc_radius_km,
+                )
         candidate_ids = list(dict.fromkeys(candidate_ids + boost_ids))
         # Pull details for boosted IDs (search only returns snippet)
         boosted_details = videos_details_bulk(key, boost_ids, parts="snippet,contentDetails,statistics")
@@ -556,7 +584,7 @@ def main() -> None:
     parser.add_argument("--regions", type=str, default="US,GB", help="(Ignored) regions are hardcoded in code")
     parser.add_argument("--videos", type=int, default=10, help="Target number of videos")
     parser.add_argument("--comments", type=int, default=50, help="Comments (+replies) per video")
-    parser.add_argument("--search-boost", action="store_true", help="Use search.list to boost Shorts discovery (costly)")
+    parser.add_argument("--no-search-boost", action="store_true", help="Disable search-based discovery (uses fewer quota units)")
     parser.add_argument("--published-after", type=str, default=None, help="ISO datetime to limit search boost, e.g. 2025-11-08T00:00:00Z")
     parser.add_argument("--lang", type=str, default=None, help="Language hint (e.g., fi). Sets videos.list hl and search.list relevanceLanguage.")
     parser.add_argument("--filter-lang", type=str, default=None, help="Comma-separated language codes to keep by snippet language fields (e.g., fi,sv).")
@@ -577,7 +605,7 @@ def main() -> None:
         regions=regions,
         target_video_count=args.videos,
         comments_per_video=args.comments,
-        use_search_boost=args.search_boost,
+        use_search_boost=not args.no_search_boost,
         published_after_iso=args.published_after,
         ui_language=args.lang,
         relevance_language=args.lang,
