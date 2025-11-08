@@ -443,9 +443,6 @@ def run_youtube_poc(
         ui_language = "fi"
     if not relevance_language and "FI" in regions:
         relevance_language = "fi"
-    if filter_langs is None and "FI" in regions:
-        filter_langs = ["fi", "sv"]
-        strict_lang = False
     if not published_after_iso:
         published_after_iso = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
     key = load_api_key(api_key)
