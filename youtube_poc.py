@@ -5,6 +5,7 @@ import re
 import json
 import argparse
 from typing import Dict, Iterable, List, Optional, Tuple
+from datetime import datetime, timedelta, timezone
 
 import isodate
 import requests
@@ -16,6 +17,10 @@ HASHTAG_REGEX = re.compile(r"(?i)(?<!\w)#([a-z0-9_]+)")
 
 # Hardcoded regional focus (CLI --regions is ignored)
 HARDCODED_REGIONS: List[str] = ["FI"]
+# Optional geobias per region (center lat, lon, radius_km) for search
+REGION_GEO: Dict[str, Tuple[float, float, int]] = {
+    "FI": (60.192059, 24.945831, 1000),  # Helsinki, ~whole Finland radius
+}
 
 
 def load_api_key(explicit_key: Optional[str] = None) -> str:
@@ -108,6 +113,8 @@ def fetch_shorts_via_search(
     max_results_per_page: int = 50,
     sleep_between_calls_s: float = 0.0,
     relevance_language: Optional[str] = None,
+    location: Optional[Tuple[float, float]] = None,
+    location_radius_km: Optional[int] = None,
 ) -> List[str]:
     """
     Use search.list to target SHORT videos, optionally limited to recent uploads.
@@ -131,6 +138,10 @@ def fetch_shorts_via_search(
                 params["publishedAfter"] = published_after_iso
             if relevance_language:
                 params["relevanceLanguage"] = relevance_language
+            if location and location_radius_km:
+                lat, lon = location
+                params["location"] = f"{lat},{lon}"
+                params["locationRadius"] = f"{location_radius_km}km"
             if page_token:
                 params["pageToken"] = page_token
             data = http_get("search", params)
@@ -318,6 +329,42 @@ def filter_by_snippet_language(items: List[Dict], allowed_langs: List[str], stri
     return kept
 
 
+def detect_language_code(text: str) -> Optional[str]:
+    """
+    Best-effort language detection using langdetect.
+    Returns ISO 639-1 lowercased code or None.
+    """
+    try:
+        from langdetect import detect
+        from langdetect import DetectorFactory
+        DetectorFactory.seed = 0
+        return detect(text).lower()
+    except Exception:
+        return None
+
+
+def filter_by_text_language(items: List[Dict], allowed_langs: List[str], strict: bool = True) -> List[Dict]:
+    """
+    Filter videos by detecting language from title+description.
+    - strict=True: drop items where detection fails or not in allowed.
+    """
+    allowed = {l.lower() for l in allowed_langs}
+    kept: List[Dict] = []
+    for it in items:
+        sn = it.get("snippet", {}) or {}
+        blob = " ".join([sn.get("title") or "", sn.get("description") or ""]).strip()
+        if not blob:
+            if not strict:
+                kept.append(it)
+            continue
+        code = detect_language_code(blob)
+        if code and code in allowed:
+            kept.append(it)
+        elif not strict:
+            kept.append(it)
+    return kept
+
+
 def sample_videos(items: List[Dict], n: int, popularity_bias: float = 0.5) -> List[Dict]:
     """
     Sample a mix of popular and less popular videos.
@@ -391,6 +438,16 @@ def run_youtube_poc(
       6) Persist JSONL to out_path
     Returns (records, out_path)
     """
+    # Defaults tuned for region focus (Finland)
+    if not ui_language and "FI" in regions:
+        ui_language = "fi"
+    if not relevance_language and "FI" in regions:
+        relevance_language = "fi"
+    if filter_langs is None and "FI" in regions:
+        filter_langs = ["fi", "sv"]
+        strict_lang = False
+    if not published_after_iso:
+        published_after_iso = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
     key = load_api_key(api_key)
     trending = fetch_trending_candidates(
         api_key=key,
@@ -402,12 +459,23 @@ def run_youtube_poc(
     candidate_ids = [it["id"] for it in trending_shorts]
 
     if use_search_boost:
+        loc_tuple: Optional[Tuple[float, float]] = None
+        loc_radius_km: Optional[int] = None
+        # Use geobias if available for first region
+        if regions:
+            geo = REGION_GEO.get(regions[0])
+            if geo:
+                lat, lon, radius = geo
+                loc_tuple = (lat, lon)
+                loc_radius_km = radius
         boost_ids = fetch_shorts_via_search(
             api_key=key,
             published_after_iso=published_after_iso,
             regions=regions,
             pages_per_region=1,
             relevance_language=relevance_language,
+            location=loc_tuple,
+            location_radius_km=loc_radius_km,
         )
         candidate_ids = list(dict.fromkeys(candidate_ids + boost_ids))
         # Pull details for boosted IDs (search only returns snippet)
@@ -425,9 +493,11 @@ def run_youtube_poc(
         by_id[str(vid)] = it
     all_short_items = list(by_id.values())
 
-    # Optional language filtering (best-effort)
+    # Optional language filtering (best-effort via snippet fields)
     if filter_langs:
         all_short_items = filter_by_snippet_language(all_short_items, filter_langs, strict=strict_lang)
+        # Further filter by detected text language (strict)
+        all_short_items = filter_by_text_language(all_short_items, filter_langs, strict=True)
 
     # Top up details if any items lack statistics
     missing_stats = [it.get("id") for it in all_short_items if "statistics" not in it]
