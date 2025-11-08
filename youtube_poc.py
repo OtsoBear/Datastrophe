@@ -313,6 +313,20 @@ def shortlist_video_items_as_shorts(items: List[Dict]) -> List[Dict]:
     return shorts
 
 
+def filter_by_min_views(items: List[Dict], min_views: int) -> List[Dict]:
+    """
+    Keep items whose statistics.viewCount >= min_views.
+    """
+    kept: List[Dict] = []
+    for it in items:
+        try:
+            vc = int((it.get("statistics", {}) or {}).get("viewCount", "0") or "0")
+        except Exception:
+            vc = 0
+        if vc >= min_views:
+            kept.append(it)
+    return kept
+
 def filter_by_snippet_language(items: List[Dict], allowed_langs: List[str], strict: bool = False) -> List[Dict]:
     """
     Keep items whose snippet.defaultAudioLanguage or snippet.defaultLanguage starts with any allowed_lang.
@@ -438,6 +452,7 @@ def run_youtube_poc(
     relevance_language: Optional[str] = None,
     filter_langs: Optional[List[str]] = None,
     strict_lang: bool = False,
+    min_views: int = 100_000,
 ) -> Tuple[List[Dict], str]:
     """
     End-to-end:
@@ -543,6 +558,10 @@ def run_youtube_poc(
             if isinstance(vid, str) and vid in filled_map:
                 all_short_items[i] = filled_map[vid]
 
+    # Enforce minimum views threshold
+    if min_views and min_views > 0:
+        all_short_items = filter_by_min_views(all_short_items, min_views=min_views)
+
     sampled_items = sample_videos(all_short_items, n=target_video_count, popularity_bias=0.6)
 
     records: List[Dict] = []
@@ -611,6 +630,7 @@ def main() -> None:
         relevance_language=args.lang,
         filter_langs=filter_langs,
         strict_lang=args.strict_lang,
+        min_views=100_000,
     )
     print(f"Wrote {len(records)} records to {out_path}")
     if args.show_json:
