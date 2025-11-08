@@ -64,6 +64,7 @@ def fetch_trending_candidates(
     per_region_pages: int = 2,
     max_results_per_page: int = 50,
     sleep_between_calls_s: float = 0.0,
+    hl: Optional[str] = None,
 ) -> List[Dict]:
     """
     Use videos.list with chart=mostPopular to fetch trending candidates across multiple regions.
@@ -81,6 +82,8 @@ def fetch_trending_candidates(
                 "regionCode": region,
                 "maxResults": str(max_results_per_page),
             }
+            if hl:
+                params["hl"] = hl
             if page_token:
                 params["pageToken"] = page_token
             data = http_get("videos", params)
@@ -101,6 +104,7 @@ def fetch_shorts_via_search(
     pages_per_region: int = 2,
     max_results_per_page: int = 50,
     sleep_between_calls_s: float = 0.0,
+    relevance_language: Optional[str] = None,
 ) -> List[str]:
     """
     Use search.list to target SHORT videos, optionally limited to recent uploads.
@@ -122,6 +126,8 @@ def fetch_shorts_via_search(
             }
             if published_after_iso:
                 params["publishedAfter"] = published_after_iso
+            if relevance_language:
+                params["relevanceLanguage"] = relevance_language
             if page_token:
                 params["pageToken"] = page_token
             data = http_get("search", params)
@@ -282,6 +288,33 @@ def shortlist_video_items_as_shorts(items: List[Dict]) -> List[Dict]:
     return shorts
 
 
+def filter_by_snippet_language(items: List[Dict], allowed_langs: List[str], strict: bool = False) -> List[Dict]:
+    """
+    Keep items whose snippet.defaultAudioLanguage or snippet.defaultLanguage starts with any allowed_lang.
+    If neither field exists:
+      - strict=False: keep the item (best-effort filter)
+      - strict=True:  drop the item
+    """
+    allowed = [lang.lower() for lang in allowed_langs]
+    kept: List[Dict] = []
+    for it in items:
+        sn = it.get("snippet", {}) or {}
+        langs = []
+        val1 = (sn.get("defaultAudioLanguage") or "").lower()
+        val2 = (sn.get("defaultLanguage") or "").lower()
+        if val1:
+            langs.append(val1)
+        if val2:
+            langs.append(val2)
+        if langs:
+            if any(any(l.startswith(a) for l in langs) for a in allowed):
+                kept.append(it)
+        else:
+            if not strict:
+                kept.append(it)
+    return kept
+
+
 def sample_videos(items: List[Dict], n: int, popularity_bias: float = 0.5) -> List[Dict]:
     """
     Sample a mix of popular and less popular videos.
@@ -340,6 +373,10 @@ def run_youtube_poc(
     comments_per_video: int = 500,
     use_search_boost: bool = True,
     published_after_iso: Optional[str] = None,
+    ui_language: Optional[str] = None,
+    relevance_language: Optional[str] = None,
+    filter_langs: Optional[List[str]] = None,
+    strict_lang: bool = False,
 ) -> Tuple[List[Dict], str]:
     """
     End-to-end:
@@ -352,7 +389,12 @@ def run_youtube_poc(
     Returns (records, out_path)
     """
     key = load_api_key(api_key)
-    trending = fetch_trending_candidates(api_key=key, region_codes=regions, per_region_pages=2)
+    trending = fetch_trending_candidates(
+        api_key=key,
+        region_codes=regions,
+        per_region_pages=2,
+        hl=ui_language,
+    )
     trending_shorts = shortlist_video_items_as_shorts(trending)
     candidate_ids = [it["id"] for it in trending_shorts]
 
@@ -362,6 +404,7 @@ def run_youtube_poc(
             published_after_iso=published_after_iso,
             regions=regions,
             pages_per_region=1,
+            relevance_language=relevance_language,
         )
         candidate_ids = list(dict.fromkeys(candidate_ids + boost_ids))
         # Pull details for boosted IDs (search only returns snippet)
@@ -378,6 +421,10 @@ def run_youtube_poc(
             continue
         by_id[str(vid)] = it
     all_short_items = list(by_id.values())
+
+    # Optional language filtering (best-effort)
+    if filter_langs:
+        all_short_items = filter_by_snippet_language(all_short_items, filter_langs, strict=strict_lang)
 
     # Top up details if any items lack statistics
     missing_stats = [it.get("id") for it in all_short_items if "statistics" not in it]
@@ -433,11 +480,15 @@ def main() -> None:
     parser.add_argument("--comments", type=int, default=50, help="Comments (+replies) per video")
     parser.add_argument("--search-boost", action="store_true", help="Use search.list to boost Shorts discovery (costly)")
     parser.add_argument("--published-after", type=str, default=None, help="ISO datetime to limit search boost, e.g. 2025-11-08T00:00:00Z")
+    parser.add_argument("--lang", type=str, default=None, help="Language hint (e.g., fi). Sets videos.list hl and search.list relevanceLanguage.")
+    parser.add_argument("--filter-lang", type=str, default=None, help="Comma-separated language codes to keep by snippet language fields (e.g., fi,sv).")
+    parser.add_argument("--strict-lang", action="store_true", help="Drop videos that lack language hints if filtering is enabled.")
     parser.add_argument("--show", action="store_true", help="Print human-readable metadata summaries")
     parser.add_argument("--show-json", action="store_true", help="Print full JSON records to stdout")
     args = parser.parse_args()
 
     regions = [r.strip() for r in args.regions.split(",") if r.strip()]
+    filter_langs = [l.strip() for l in args.filter_lang.split(",")] if args.filter_lang else None
     records, out_path = run_youtube_poc(
         api_key=args.api_key,
         out_path=args.out,
@@ -446,6 +497,10 @@ def main() -> None:
         comments_per_video=args.comments,
         use_search_boost=args.search_boost,
         published_after_iso=args.published_after,
+        ui_language=args.lang,
+        relevance_language=args.lang,
+        filter_langs=filter_langs,
+        strict_lang=args.strict_lang,
     )
     print(f"Wrote {len(records)} records to {out_path}")
     if args.show_json:
