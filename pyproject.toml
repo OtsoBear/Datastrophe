@@ -1,0 +1,15 @@
+[project]
+name = "youtube-poc"
+version = "0.1.0"
+description = "YouTube Shorts POC scraper for metadata and top comments"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.32.0",
+    "python-dotenv>=1.0.1",
+    "isodate>=0.6.1",
+    "typing-extensions>=4.12.2",
+]
+
+[tool.uv]
+default-groups = ["default"]
+
