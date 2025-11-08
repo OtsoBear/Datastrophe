@@ -490,7 +490,10 @@ def run_youtube_poc(
     relevance_language: Optional[str] = None,
     filter_langs: Optional[List[str]] = None,
     strict_lang: bool = False,
-    min_views: int = 100_000,
+    min_views: int = 0,
+    trending_pages: int = 2,
+    recency_days: int = 2,
+    select_mode: str = "top",  # 'top' or 'sample'
 ) -> Tuple[List[Dict], str]:
     """
     End-to-end:
@@ -508,12 +511,12 @@ def run_youtube_poc(
     if not relevance_language and "FI" in regions:
         relevance_language = "fi"
     if not published_after_iso:
-        published_after_iso = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        published_after_iso = (datetime.now(timezone.utc) - timedelta(days=recency_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     key = load_api_key(api_key)
     trending = fetch_trending_candidates(
         api_key=key,
         region_codes=regions,
-        per_region_pages=2,
+        per_region_pages=trending_pages,
         hl=ui_language,
     )
     trending_shorts = shortlist_video_items_as_shorts(trending)
@@ -600,8 +603,11 @@ def run_youtube_poc(
     if min_views and min_views > 0:
         all_short_items = filter_by_min_views(all_short_items, min_views=min_views)
 
-    # Pick most popular Shorts for the region (by views)
-    sampled_items = select_top_by_views(all_short_items, n=target_video_count)
+    # Select items
+    if select_mode == "top":
+        sampled_items = select_top_by_views(all_short_items, n=target_video_count)
+    else:
+        sampled_items = sample_videos(all_short_items, n=target_video_count, popularity_bias=0.7)
 
     records: List[Dict] = []
     for idx, item in enumerate(sampled_items, 1):
@@ -645,20 +651,23 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="YouTube Shorts POC: fetch metadata and top comments.")
     parser.add_argument("--api-key", type=str, default=None, help="YouTube Data API key (or set GOOGLE_API_KEY)")
     parser.add_argument("--out", type=str, default="youtube_poc_output.jsonl", help="Output JSONL file")
-    parser.add_argument("--regions", type=str, default="US,GB", help="(Ignored) regions are hardcoded in code")
-    parser.add_argument("--videos", type=int, default=10, help="Target number of videos")
-    parser.add_argument("--comments", type=int, default=500, help="Comments (+replies) per video")
+    parser.add_argument("--regions", type=str, default="FI", help="Comma-separated region codes, e.g. FI or US,GB,DE")
+    parser.add_argument("--videos", type=int, default=10, help="Target number of videos to output")
+    parser.add_argument("--comments", type=int, default=500, help="Comments (+replies) per video (ordered by relevance)")
     parser.add_argument("--no-search-boost", action="store_true", help="Disable search-based discovery (uses fewer quota units)")
-    parser.add_argument("--published-after", type=str, default=None, help="ISO datetime to limit search boost, e.g. 2025-11-08T00:00:00Z")
+    parser.add_argument("--published-after", type=str, default=None, help="ISO datetime for recency cutoff; overrides --recency-days")
     parser.add_argument("--lang", type=str, default=None, help="Language hint (e.g., fi). Sets videos.list hl and search.list relevanceLanguage.")
     parser.add_argument("--filter-lang", type=str, default=None, help="Comma-separated language codes to keep by snippet language fields (e.g., fi,sv).")
     parser.add_argument("--strict-lang", action="store_true", help="Drop videos that lack language hints if filtering is enabled.")
+    parser.add_argument("--min-views", type=int, default=300000, help="Minimum required viewCount for videos (e.g., 300000)")
+    parser.add_argument("--trending-pages", type=int, default=5, help="Pages per region for mostPopular (50 results per page)")
+    parser.add_argument("--recency-days", type=int, default=2, help="Days back for recency cutoff when search boost is enabled")
+    parser.add_argument("--select", type=str, choices=["top", "sample"], default="top", help="Selection method: top by views or mixed sample")
     parser.add_argument("--show", action="store_true", help="Print human-readable metadata summaries")
     parser.add_argument("--show-json", action="store_true", help="Print full JSON records to stdout")
     args = parser.parse_args()
 
-    # Ignore CLI regions; use hardcoded focus
-    regions = HARDCODED_REGIONS
+    regions = [r.strip() for r in args.regions.split(",") if r.strip()]
     filter_langs = [l.strip() for l in args.filter_lang.split(",")] if args.filter_lang else None
     # Default to printing summaries if no explicit output mode is requested
     if not args.show and not args.show_json:
@@ -675,7 +684,10 @@ def main() -> None:
         relevance_language=args.lang,
         filter_langs=filter_langs,
         strict_lang=args.strict_lang,
-        min_views=100_000,
+        min_views=args.min_views,
+        trending_pages=args.trending_pages,
+        recency_days=args.recency_days,
+        select_mode=args.select,
     )
     print(f"Wrote {len(records)} records to {out_path}")
     if args.show_json:
