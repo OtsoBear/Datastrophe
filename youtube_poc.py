@@ -196,13 +196,14 @@ def fetch_top_comments_with_replies(
     api_key: str,
     video_id: str,
     limit: int = 500,
-    order: str = "relevance",
+    order: str = "relevance",  # API order for top-level: 'relevance' or 'time'
+    sort_mode: str = "relevance",  # 'relevance' keeps API order, 'likes' sorts all comments by likeCount desc
 ) -> List[Dict]:
     """
     Fetch up to `limit` comments including replies.
     - Retrieve top-level threads via commentThreads.list with maxResults=100 pages.
     - For threads with replies, fetch full reply pages via comments.list as needed.
-    Returns list of dicts:
+    Returns list of dicts (ordered):
       { type: "comment"|"reply",
         text: str,
         author: str,
@@ -210,10 +211,10 @@ def fetch_top_comments_with_replies(
         publishedAt: str,
         parentId: Optional[str] }
     """
-    comments: List[Dict] = []
+    flat_comments: List[Dict] = []
     next_page: Optional[str] = None
     while True:
-        if len(comments) >= limit:
+        if len(flat_comments) >= limit:
             break
         params = {
             "key": api_key,
@@ -231,7 +232,7 @@ def fetch_top_comments_with_replies(
             top = th.get("snippet", {}).get("topLevelComment", {}).get("snippet", {})
             top_id = th.get("snippet", {}).get("topLevelComment", {}).get("id")
             if top:
-                comments.append(
+                flat_comments.append(
                     {
                         "type": "comment",
                         "id": th.get("id"),
@@ -242,7 +243,7 @@ def fetch_top_comments_with_replies(
                         "parentId": None,
                     }
                 )
-                if len(comments) >= limit:
+                if len(flat_comments) >= limit:
                     break
             # Fetch all replies beyond the few inline ones
             total_reply_count = th.get("snippet", {}).get("totalReplyCount", 0)
@@ -250,15 +251,22 @@ def fetch_top_comments_with_replies(
                 replies_added = fetch_all_replies_for_parent(
                     api_key=api_key,
                     parent_id=top_id,
-                    remaining=limit - len(comments),
+                    remaining=limit - len(flat_comments),
                 )
-                comments.extend(replies_added)
-                if len(comments) >= limit:
+                flat_comments.extend(replies_added)
+                if len(flat_comments) >= limit:
                     break
         next_page = data.get("nextPageToken")
         if not next_page:
             break
-    return comments[:limit]
+    # Sorting behavior
+    if sort_mode == "likes":
+        flat_comments.sort(key=lambda c: (c.get("likeCount") or 0), reverse=True)
+    else:
+        # keep API thread order for top-level; replies are already appended after their parent; but ensure replies within a thread are sorted by likeCount desc for readability
+        # We cannot perfectly identify thread boundaries post-flatten without tracking; so leave as collected (API relevance).
+        pass
+    return flat_comments[:limit]
 
 
 def fetch_all_replies_for_parent(api_key: str, parent_id: str, remaining: int) -> List[Dict]:
@@ -430,8 +438,15 @@ def assemble_video_record(video_item: Dict, comments: List[Dict]) -> Dict:
                 comment_texts.append(text)
         elif isinstance(c, str) and c:
             comment_texts.append(c)
+    vid_id = video_item.get("id")
+    if isinstance(vid_id, dict):
+        vid_id = vid_id.get("videoId")
+    url = f"https://www.youtube.com/watch?v={vid_id}" if vid_id else None
+    shorts_url = f"https://www.youtube.com/shorts/{vid_id}" if vid_id else None
     return {
-        "videoId": video_item.get("id"),
+        "videoId": vid_id,
+        "url": url,
+        "shortsUrl": shorts_url,
         "title": snippet.get("title"),
         "description": description,
         "hashtags": hashtags,
@@ -578,7 +593,13 @@ def run_youtube_poc(
         vid = item.get("id") if isinstance(item.get("id"), str) else item.get("id", {}).get("videoId")
         if not vid:
             continue
-        comments = fetch_top_comments_with_replies(api_key=key, video_id=vid, limit=comments_per_video)
+        comments = fetch_top_comments_with_replies(
+            api_key=key,
+            video_id=vid,
+            limit=comments_per_video,
+            order="relevance",
+            sort_mode="relevance",
+        )
         record = assemble_video_record(item, comments)
         records.append(record)
 
@@ -611,7 +632,7 @@ def main() -> None:
     parser.add_argument("--out", type=str, default="youtube_poc_output.jsonl", help="Output JSONL file")
     parser.add_argument("--regions", type=str, default="US,GB", help="(Ignored) regions are hardcoded in code")
     parser.add_argument("--videos", type=int, default=10, help="Target number of videos")
-    parser.add_argument("--comments", type=int, default=50, help="Comments (+replies) per video")
+    parser.add_argument("--comments", type=int, default=500, help="Comments (+replies) per video")
     parser.add_argument("--no-search-boost", action="store_true", help="Disable search-based discovery (uses fewer quota units)")
     parser.add_argument("--published-after", type=str, default=None, help="ISO datetime to limit search boost, e.g. 2025-11-08T00:00:00Z")
     parser.add_argument("--lang", type=str, default=None, help="Language hint (e.g., fi). Sets videos.list hl and search.list relevanceLanguage.")
