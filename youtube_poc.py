@@ -3,6 +3,7 @@ import time
 import random
 import re
 import json
+import argparse
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import isodate
@@ -407,15 +408,55 @@ def run_youtube_poc(
     return records, out_path
 
 
-if __name__ == "__main__":
-    # Minimal manual test (env must hold GOOGLE_API_KEY)
-    data, path = run_youtube_poc(
-        api_key=None,
-        out_path="youtube_poc_output.jsonl",
-        regions=["US", "GB"],
-        target_video_count=10,
-        comments_per_video=50,
-        use_search_boost=False,
+def _truncate(text: Optional[str], max_len: int = 120) -> str:
+    if not text:
+        return ""
+    return text if len(text) <= max_len else text[: max_len - 1] + "…"
+
+
+def _print_record_summary(rec: Dict) -> None:
+    engagement = rec.get("engagement") or {}
+    hashtags = rec.get("hashtags") or []
+    print(
+        f"- {rec.get('videoId')} | { _truncate(rec.get('title')) }\n"
+        f"  hashtags: {', '.join(hashtags[:10])}\n"
+        f"  views: {engagement.get('viewCount')}  likes: {engagement.get('likeCount')}  comments: {engagement.get('commentCount')}  fetched_comments: {len(rec.get('comments') or [])}\n"
     )
-    print(f"Wrote {len(data)} records to {path}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="YouTube Shorts POC: fetch metadata and top comments.")
+    parser.add_argument("--api-key", type=str, default=None, help="YouTube Data API key (or set GOOGLE_API_KEY)")
+    parser.add_argument("--out", type=str, default="youtube_poc_output.jsonl", help="Output JSONL file")
+    parser.add_argument("--regions", type=str, default="US,GB", help="Comma-separated region codes, e.g. US,GB,DE")
+    parser.add_argument("--videos", type=int, default=10, help="Target number of videos")
+    parser.add_argument("--comments", type=int, default=50, help="Comments (+replies) per video")
+    parser.add_argument("--search-boost", action="store_true", help="Use search.list to boost Shorts discovery (costly)")
+    parser.add_argument("--published-after", type=str, default=None, help="ISO datetime to limit search boost, e.g. 2025-11-08T00:00:00Z")
+    parser.add_argument("--show", action="store_true", help="Print human-readable metadata summaries")
+    parser.add_argument("--show-json", action="store_true", help="Print full JSON records to stdout")
+    args = parser.parse_args()
+
+    regions = [r.strip() for r in args.regions.split(",") if r.strip()]
+    records, out_path = run_youtube_poc(
+        api_key=args.api_key,
+        out_path=args.out,
+        regions=regions,
+        target_video_count=args.videos,
+        comments_per_video=args.comments,
+        use_search_boost=args.search_boost,
+        published_after_iso=args.published_after,
+    )
+    print(f"Wrote {len(records)} records to {out_path}")
+    if args.show_json:
+        for rec in records:
+            print(json.dumps(rec, ensure_ascii=False))
+    elif args.show:
+        print("\nMetadata summaries:\n")
+        for rec in records:
+            _print_record_summary(rec)
+
+
+if __name__ == "__main__":
+    main()
 
