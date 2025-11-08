@@ -420,6 +420,20 @@ def sample_videos(items: List[Dict], n: int, popularity_bias: float = 0.5) -> Li
     return sampled[:n]
 
 
+def select_top_by_views(items: List[Dict], n: int) -> List[Dict]:
+    """
+    Select the top-n items by statistics.viewCount descending.
+    """
+    scored: List[Tuple[int, Dict]] = []
+    for it in items:
+        try:
+            vc = int((it.get("statistics", {}) or {}).get("viewCount", "0") or "0")
+        except Exception:
+            vc = 0
+        scored.append((vc, it))
+    scored.sort(key=lambda t: t[0], reverse=True)
+    return [it for _, it in scored[:n]]
+
 def assemble_video_record(video_item: Dict, comments: List[Dict]) -> Dict:
     """
     Build a compact JSON-serializable record for downstream analysis.
@@ -586,7 +600,8 @@ def run_youtube_poc(
     if min_views and min_views > 0:
         all_short_items = filter_by_min_views(all_short_items, min_views=min_views)
 
-    sampled_items = sample_videos(all_short_items, n=target_video_count, popularity_bias=0.6)
+    # Pick most popular Shorts for the region (by views)
+    sampled_items = select_top_by_views(all_short_items, n=target_video_count)
 
     records: List[Dict] = []
     for idx, item in enumerate(sampled_items, 1):
