@@ -421,6 +421,15 @@ def assemble_video_record(video_item: Dict, comments: List[Dict]) -> Dict:
     description = snippet.get("description", "") or ""
     tags = snippet.get("tags", []) or []
     hashtags = sorted(set(extract_hashtags(description)) | {t[1:].lower() for t in tags if t.startswith("#")})
+    # Only keep comment text content
+    comment_texts = []
+    for c in comments:
+        if isinstance(c, dict):
+            text = c.get("text")
+            if text:
+                comment_texts.append(text)
+        elif isinstance(c, str) and c:
+            comment_texts.append(c)
     return {
         "videoId": video_item.get("id"),
         "title": snippet.get("title"),
@@ -436,7 +445,7 @@ def assemble_video_record(video_item: Dict, comments: List[Dict]) -> Dict:
             "likeCount": statistics.get("likeCount"),
             "commentCount": statistics.get("commentCount"),
         },
-        "comments": comments,
+        "comments": comment_texts,
     }
 
 
