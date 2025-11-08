@@ -14,6 +14,9 @@ from dotenv import load_dotenv
 YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3"
 HASHTAG_REGEX = re.compile(r"(?i)(?<!\w)#([a-z0-9_]+)")
 
+# Hardcoded regional focus (CLI --regions is ignored)
+HARDCODED_REGIONS: List[str] = ["FI"]
+
 
 def load_api_key(explicit_key: Optional[str] = None) -> str:
     """
@@ -475,7 +478,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="YouTube Shorts POC: fetch metadata and top comments.")
     parser.add_argument("--api-key", type=str, default=None, help="YouTube Data API key (or set GOOGLE_API_KEY)")
     parser.add_argument("--out", type=str, default="youtube_poc_output.jsonl", help="Output JSONL file")
-    parser.add_argument("--regions", type=str, default="US,GB", help="Comma-separated region codes, e.g. US,GB,DE")
+    parser.add_argument("--regions", type=str, default="US,GB", help="(Ignored) regions are hardcoded in code")
     parser.add_argument("--videos", type=int, default=10, help="Target number of videos")
     parser.add_argument("--comments", type=int, default=50, help="Comments (+replies) per video")
     parser.add_argument("--search-boost", action="store_true", help="Use search.list to boost Shorts discovery (costly)")
@@ -487,8 +490,12 @@ def main() -> None:
     parser.add_argument("--show-json", action="store_true", help="Print full JSON records to stdout")
     args = parser.parse_args()
 
-    regions = [r.strip() for r in args.regions.split(",") if r.strip()]
+    # Ignore CLI regions; use hardcoded focus
+    regions = HARDCODED_REGIONS
     filter_langs = [l.strip() for l in args.filter_lang.split(",")] if args.filter_lang else None
+    # Default to printing summaries if no explicit output mode is requested
+    if not args.show and not args.show_json:
+        args.show = True
     records, out_path = run_youtube_poc(
         api_key=args.api_key,
         out_path=args.out,
