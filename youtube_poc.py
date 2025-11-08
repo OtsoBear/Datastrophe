@@ -495,9 +495,17 @@ def run_youtube_poc(
 
     # Optional language filtering (best-effort via snippet fields)
     if filter_langs:
+        original_items = list(all_short_items)
         all_short_items = filter_by_snippet_language(all_short_items, filter_langs, strict=strict_lang)
         # Further filter by detected text language (strict)
         all_short_items = filter_by_text_language(all_short_items, filter_langs, strict=True)
+        # Fallback widen to English if too few
+        if not all_short_items:
+            widened = list({*filter_langs, "en"})
+            all_short_items = filter_by_text_language(original_items, widened, strict=True)
+        # Final fallback: no language filtering if still empty
+        if not all_short_items:
+            all_short_items = original_items
 
     # Top up details if any items lack statistics
     missing_stats = [it.get("id") for it in all_short_items if "statistics" not in it]
